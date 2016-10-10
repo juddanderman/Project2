@@ -1,0 +1,469 @@
+---
+title: "Data 607 Project 2"
+author: "Judd Anderman"
+date: "October 9, 2016"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 4
+    code_folding: show
+---
+
+Project 2 called on students to select three of our classmates' selected untidy datasets and proposed analyses, create CSV files containing all of the information included in each dataset, read the CSV files into R, use __tidyr__ and __dplyr__ as needed to tidy and transform the data, and carry out the proposed analyses.  
+
+The three untidy datasets that I chose to work with were already available online in CSV format, but in one case, the data for each of the observations of interest were downloaded in five separate CSV files and ultimately combined.
+
+#### Load required packages
+```{r setup, warning = FALSE, message = FALSE}
+# Change working directory as needed
+setwd("~/DATA 607 Data Acquisition and Management/Project2") 
+
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(lubridate)
+library(leaflet)
+library(knitr)
+```
+
+### Animal and Plant Milk Nutritional Content
+Aaron Grzasko's Nutitritional Content of Milk proposal required the selection of five different types of milk, consolidating their nutritional information, and analyzing that data across type (here almond, goat, human, rice, and whole).  The data were sourced from the [USDA Food Composition Databases](https://ndb.nal.usda.gov/ndb/search/list).
+
+#### Import CSV data
+```{r read-in-milk}
+milk_files <- list.files(pattern = "^milk.+\\.csv$")
+
+milk <- lapply(milk_files, 
+               function(x) read.csv(file = x, header = FALSE, 
+                                    stringsAsFactors = FALSE, encoding = "latin1"))
+
+names(milk) <- str_replace_all(milk_files, "(milk_)|(\\.csv)", "")
+```
+
+#### Clean and tidy data frame elements of `milk` list
+```{r tidy-milk}
+milk <- lapply(milk, function(x) x %>% slice(5:nrow(x)))
+
+# The line of code below was used to ID the columns with cup sizes
+# lapply(milk, function(x) x[1, ])
+
+cups <- data.frame(c("almond", "goat", "human", "rice", "whole"), 
+         as.numeric(c(str_extract(milk$almond[1, 4], "\\d{3}\\.\\d{1}"), 
+           str_extract(milk$goat[1, 5], "\\d{3}\\.\\d{1}"),
+           str_extract(milk$human[1, 5], "\\d{3}\\.\\d{1}"),
+           str_extract(milk$rice[1, 4], "\\d{3}\\.\\d{1}"),
+           str_extract(milk$whole[1, 4], "\\d{3}\\.\\d{1}"))),
+         stringsAsFactors =  FALSE)
+colnames(cups) <- c("type", "cup.size")
+           
+
+milk <- lapply(milk, function(x) x %>% select(num_range("V", 1:3)))
+
+new_colnames <- paste(milk[[1]][1, ])
+new_colnames[3] <- "Value/100g"
+
+milk <- lapply(milk, setNames, nm = new_colnames)
+
+milk <- lapply(milk, function(x) x %>% slice(2:nrow(x)))
+
+add_index_colname <- function(i, x) {
+  x[[i]] <- x[[i]] %>% mutate(Kind = rep(names(x[i]), times = nrow(x[[i]])))
+}
+
+milk <- lapply(seq_along(milk), add_index_colname, x = milk)
+names(milk) <- str_replace_all(milk_files, "(milk_)|(\\.csv)", "")
+
+milk <- bind_rows(milk)
+milk <- milk %>% filter(Unit != "") %>% unite(Nutrient, Nutrient, Unit, sep = " (")
+
+milk$Nutrient <- str_c(milk$Nutrient, ")")
+
+milk <- milk %>% group_by(Kind) %>% spread(Nutrient, `Value/100g`, convert = TRUE)
+```
+
+#### Calculate the ratio of protein to total calories for each milk type
+```{r protein-per-cal}
+kable(milk %>% group_by(Kind) %>% summarize(`Protein (g)`/`Energy (kcal)`))
+```
+
+#### Calculate the average calorie content per cup across milk types
+```{r kcal-per-cup}
+milk <- milk %>% inner_join(cups, by = c("Kind" = "type"))
+
+kable(milk %>% group_by(Kind) %>% 
+        summarize(`kcal/cup` = `Energy (kcal)` * (cup.size/100)))
+```
+
+#### Arrange the observations in ascending order by total calories per cup
+```{r milk-sort-calories}
+kable(milk %>% group_by(Kind) %>% 
+        summarize(`kcal/cup` = `Energy (kcal)` * (cup.size/100)) %>% 
+        arrange(`kcal/cup`))
+```
+
+#### Calculate net carbohydrates (i.e. gross carbohydrates - dietary fiber)
+```{r net-carbs}
+kable(milk %>% group_by(Kind) %>% 
+        summarize(net.carbohydrates = 
+                    `Sugars, total (g)` - `Fiber, total dietary (g)`))
+```
+
+### US Prescription Drug Spending 1960-2014
+I provided a link to [US National Health Expenditure Accounts (NHEA) historical data](https://www.cms.gov/Research-Statistics-Data-and-Systems/Statistics-Trends-and-Reports/NationalHealthExpendData/NationalHealthAccountsHistorical.html) from CMS and requested an analysis of changes in total prescription drug spending per capita and the distribution of funding sources for prescription drug expenditures over time.
+
+#### Import CSV data
+```{r read-in-rx}
+spend <- read.csv("NHE2014.csv", header = FALSE, stringsAsFactors = FALSE)
+spend[1:5, 1:5]
+
+colnames(spend)[2:ncol(spend)] <- spend[2, 2:ncol(spend)]
+```
+
+#### Extract population counts and prescription drug spending by year
+```{r extract}
+pop <- spend %>% filter(V1 == "POPULATION")
+pop[2:ncol(pop)] <- as.integer(pop[2:ncol(pop)]) 
+
+rx <- spend %>% slice(which(str_detect(spend$V1, "Prescription")):(which(str_detect(spend$V1, "Prescription")) + 29))
+colnames(rx)[1] <- "payer"
+
+title <- spend[1, 1]
+```
+
+#### Clean up and melt data, join `rx` and `pop` data frames
+```{r melt-rx}
+#rx$payer
+rx$payer <- str_replace(rx$payer, "\\s\\(.+\\)", "")
+rx$payer <- str_replace_all(rx$payer, "\\*|'", "")
+rx$payer <- str_replace_all(rx$payer, "\\b\\s\\b|/", ".")
+rx$payer[7:8] <- str_c(str_trim(rx$payer[6]), str_trim(rx$payer[7:8]), sep = "-")
+rx$payer[10:11] <- str_c(str_trim(rx$payer[9]), str_trim(rx$payer[10:11]), sep = "-")
+rx$payer[21:22] <- str_c(str_trim(rx$payer[20]), str_trim(rx$payer[21:22]), sep = "-")
+rx$payer[24:25] <- str_c(str_trim(rx$payer[23]), str_trim(rx$payer[24:25]), sep = "-")
+rx$payer <- str_trim(rx$payer)
+rx$payer
+
+rx <- rx %>% gather(year, spending, 2:ncol(rx)) %>% spread(payer, spending)
+
+rx <- apply(rx, 2, function(x) str_replace(x, "-", 0))
+rx <- apply(rx, 2, function(x) str_replace(x, ",", ""))
+rx <- apply(rx, 2, function(x) as.integer(str_trim(x)))
+
+rx <- data.frame(rx, stringsAsFactors = FALSE)
+
+pop <- pop %>% gather(year, population, 2:ncol(pop)) %>% select(year, population)
+pop$year <- as.integer(pop$year)
+
+head(pop)
+
+rx <- rx %>% inner_join(pop, by = "year") %>% select(year, population, everything())
+
+rx[1:5, 1:5]
+```
+
+#### Total spending per capita on prescription drugs
+```{r per-cap}
+per_cap <- rx %>% group_by(year) %>% summarize(per.cap.rx = Total.Prescription.Drug.Expenditures/population)
+
+ggplot(per_cap, aes(x = year, y = per.cap.rx)) + 
+  geom_point() + geom_smooth() + 
+  labs(x = "Year", y = "Per Capita Rx Expenditures (nominal)")
+```
+
+#### Inflation adjusted per capita prescription expenditures
+In an attempt to adjust for inflation, I sourced annual averages of the [Consumer Price Index for All Urban Consumers (CPI-U)](http://data.bls.gov/cgi-bin/surveymost?bls) from the Bureau of Labor Statistics (I used the data from Series ID: CUUR0000AA0 with 1967 as the base year, and selected for annual averages to be included in the .xlsx download, which was later saved in .csv format) and joined those data to the prescription spending data extracted from the original NHEA table.  Then, using the average CPI-U for 2014 as an index, I standardized prescription drug spending each year from 1960 to 2014 in 2014 dollars. 
+
+```{r inflation}
+cpi <- read.csv("CPI-U.csv", header = FALSE, stringsAsFactors = FALSE)
+cpi <- cpi %>% slice(10:nrow(cpi))
+colnames(cpi) <- cpi[1, ]
+cpi <- cpi[-1, ]
+
+cpi <- cpi %>% select(Year, Annual)
+colnames(cpi)[2] <- "avg.cpi"
+cpi <- data.frame(apply(cpi, 1:2, function(x) as.numeric(x)))
+
+cpi <- cpi %>% filter (Year >= 1960 & Year <= 2014)
+
+per_cap <- per_cap %>% inner_join(cpi, by = c("year" = "Year"))
+
+cpi_index <- per_cap$avg.cpi[per_cap$year == 2014]
+
+per_cap <- per_cap %>% mutate(infl.adj.rx = per.cap.rx * (cpi_index/avg.cpi))
+
+ggplot(per_cap, aes(x = year, y = infl.adj.rx)) + 
+  geom_point() + geom_smooth() + 
+  labs(x = "Year", y = "Per Capita Rx Expenditures (in 2014 dollars)")
+
+per_cap <- per_cap %>% select(year, per.cap.rx, infl.adj.rx) %>% gather(type, per.cap, per.cap.rx:infl.adj.rx)
+
+ggplot(per_cap, aes(x = year, y = per.cap, color = type)) + 
+  geom_point() + geom_smooth() + 
+  labs(x = "Year", y = "Per Capita Rx Expenditures", 
+       main = "Inflation Adjusted and Unadjusted Per Capita Expenditures") +
+  scale_color_discrete(name = "Inflation Adjusted/Nominal Spending",
+                       labels = c("2014 dollars", "nominal")) +
+  theme(legend.position = "bottom")
+```
+
+#### Change in distribution of spending across funding sources/payers over time
+```{r payer-props-3}
+rx_props <- rx %>% mutate_each(funs(./Total.Prescription.Drug.Expenditures), -c(year, population, Total.Prescription.Drug.Expenditures)) %>% select(-Total.Prescription.Drug.Expenditures)
+
+props_3 <- rx_props %>% select(year, Health.Insurance, Out.of.pocket,  Other.Third.Party.Payers.and.Programs)
+
+# The line below was used to check that the sum of the proportions
+# was equal to one for each year
+
+#props_3 %>% select(-year) %>% mutate(check_props = rowSums(.))
+
+props_3 <- props_3 %>% gather(payer, prop, 2:4)
+
+props_3$payer <- factor(props_3$payer, 
+                        levels = c("Health.Insurance",
+                                   "Other.Third.Party.Payers.and.Programs"))
+
+ggplot(props_3, aes(x = year, y = prop)) +
+  geom_bar(aes(fill = payer), stat = "identity", position = "stack") + 
+  labs(x = "Year", y = "Proportion") +
+  theme(legend.position = "bottom") +
+  scale_fill_discrete(name = "Funding Source", 
+                      labels = c("Health Insurance", 
+                                 "Out of Pocket",
+                                 "Other Third Party Payers"))
+
+ggplot(props_3, aes(x = year, y = prop)) +
+  geom_area(aes(fill = payer), position = "stack") + 
+  labs(x = "Year", y = "Proportion") +
+  theme(legend.position = "bottom") +
+  scale_fill_discrete(name = "Funding Source", 
+                      labels = c("Health Insurance", 
+                                 "Out of Pocket",
+                                 "Other Third Party Payers"))
+```
+
+```{r payer-props-18, fig.height = 5, fig.width = 9}
+props_18 <- rx_props %>% select(year, Out.of.pocket, Private.Health.Insurance, Medicare, Medicaid, CHIP, Department.of.Defense, Department.of.Veterans.Affairs, Worksite.Health.Care, Other.Private.Revenues, Indian.Health.Services, Workers.Compensation, General.Assistance, Maternal.Child.Health, Vocational.Rehabilitation, Other.Federal.Programs, SAMHSA, Other.State.and.Local.Programs, School.Health)
+
+# The line below was used to check that the sum of the proportions
+# was equal to one for each year
+
+#props_18 %>% select(-year) %>% mutate(check_props = rowSums(.))
+
+props_18 <- props_18 %>% gather(payer, prop, 2:ncol(props_18))
+
+(props_18 %>% filter(year == 2014) %>% arrange(desc(prop)))[1:5, ]
+
+set.seed(2)
+ggplot(props_18, aes(x = year, y = prop)) +
+  geom_bar(aes(fill = payer), stat = "identity", position = "stack") + 
+  labs(x = "Year", y = "Proportion") +
+  theme(legend.position = "right") +
+  scale_fill_manual(name = "Payer", 
+                    values = sample(rainbow(18), 
+                                    size = 18, 
+                                    replace = FALSE)) +
+  annotate("text", x = 1980, y = 0.25, label = "Out of Pocket") +
+  annotate("text", x = 2004, y = 0.5, label = "Private Insurance") +
+  annotate("text", x = 2010, y = 0.76, label = "Medicare") +
+  annotate("text", x = 1990, y = 0.91, label = "Medicaid") 
+  
+props_18$prop[props_18$year == 2014 & props_18$payer == "Private.Health.Insurance"]
+
+set.seed(2)
+ggplot(props_18, aes(x = year, y = prop)) +
+  geom_area(aes(fill = payer), position = "stack") + 
+  labs(x = "Year", y = "Proportion") +
+  theme(legend.position = "right") +
+  scale_fill_manual(name = "Payer", 
+                    values = sample(rainbow(18), 
+                                    size = 18, 
+                                    replace = FALSE)) +
+  annotate("text", x = 1980, y = 0.25, label = "Out of Pocket") +
+  annotate("text", x = 2004, y = 0.5, label = "Private Insurance") +
+  annotate("text", x = 2010, y = 0.76, label = "Medicare") +
+  annotate("text", x = 1990, y = 0.91, label = "Medicaid") 
+```
+
+```{r top-4-inflation}
+infl_adj_top_4 <- rx %>% select(year, Out.of.pocket, Private.Health.Insurance, Medicaid, Medicare) %>% inner_join(cpi, by = c("year" = "Year")) %>% mutate_each(funs((.) * (cpi_index/avg.cpi)), -year) %>% select(1:5) %>% gather(payer, infl.adj.spending, 2:5)
+
+ggplot(infl_adj_top_4, aes(x = year, y = infl.adj.spending, color = payer)) +
+  geom_point() + geom_smooth() +
+  labs(x = "Year", y = "Inflatjion Adj. Spending (2014 dollars)")
+```
+
+### NYC Citi Bike Data
+Sharon Morris provided a link to [June 2016 NYC Citi Bike Trip Data](https://s3.amazonaws.com/tripdata/201606-citibike-tripdata.zip) and requested an analysis to produce a profile of the typical Citi Bike user.  The dataset required some playing with in order to be read-in in full.
+
+#### Import CSV data
+```{r read-in-citibike}
+bike <- read.csv("201606-citibike-tripdata.csv", header = TRUE, stringsAsFactors = FALSE)
+
+head(bike)
+
+colnames(bike) <- str_replace_all(colnames(bike), "X\\.|\\.$", "")
+colnames(bike)
+```
+
+#### Citi Bike user profiles
+```{r user-profile}
+gender_codes <- data.frame(key = c("unknown", "male", "female"), val = 0:2)
+gender_name <- function(x)  gender_codes$key[gender_codes$val == x]
+
+mdy_hms(bike$stoptime[1]) - mdy_hms(bike$starttime[1])
+bike$tripduration[1]/60
+
+day_of_wk <- bike %>% 
+  group_by(weekday = 
+             wday(mdy_hms(bike$starttime), label = TRUE, abbr = FALSE)) %>%
+  summarize(num_rides = n()) %>% arrange(weekday)  
+
+kable(day_of_wk)
+
+avg_age <- round(mean(year(Sys.time()) - bike$birth.year, na.rm = TRUE), digits = 1)
+avg_trip_minutes <- round(mean(bike$tripduration)/60, digits = 2)
+typ_gender <- bike %>% group_by(gender) %>% 
+  summarize(N = n()) %>% top_n(1) %>% select(gender) %>% 
+  mutate(gender = gender_name(gender))
+
+names(typ_gender) <- "typ_gender"
+
+kable(data.frame(typ_gender, avg_age, avg_trip_minutes))
+
+typical_rider <- bike %>% group_by(usertype, gender) %>%
+  summarize(N = n(), 
+            age = mean(year(Sys.time()) - birth.year, na.rm = TRUE),
+            duration_minutes = mean(tripduration)/60) 
+
+typical_rider <- typical_rider %>% 
+  mutate(gender = gender_name(gender), age = round(age, digits = 1), 
+         duration_minutes = round(duration_minutes, digits = 2))
+
+kable(typical_rider)
+
+nrow(bike %>% filter(usertype == "Customer" & !is.na(birth.year)))
+
+bike %>% group_by(bikeid) %>% summarize(N = n()) %>% 
+  top_n(10) %>% arrange(desc(N))
+
+bike %>% group_by(start.station.name) %>% summarize(N = n()) %>% 
+  top_n(10) %>% arrange(desc(N))
+
+bike %>% group_by(end.station.name) %>% summarize(N = n()) %>% 
+  top_n(10) %>% arrange(desc(N))
+
+bike %>% group_by(start.station.name, end.station.name) %>% 
+  summarize(N = n()) %>% arrange(desc(N)) %>% ungroup() %>% 
+  top_n(10, wt = N)
+
+bike %>% group_by(usertype, start.station.name) %>% 
+  summarize(N = n()) %>% arrange(desc(N)) %>% top_n(10, wt = N)
+
+bike %>% group_by(usertype, end.station.name) %>% 
+  summarize(N = n()) %>% top_n(10) %>% arrange(desc(N)) %>% 
+  top_n(10, wt = N)
+
+bike %>% group_by(usertype, start.station.name, end.station.name) %>% 
+  summarize(N = n()) %>% arrange(desc(N)) %>% ungroup() %>% 
+  top_n(10, wt = N)
+
+routes <- bike %>% group_by(start.station.id, start.station.name, 
+                            start.station.longitude, start.station.latitude, 
+                            end.station.id, end.station.name, 
+                            end.station.longitude, end.station.latitude) %>% 
+  summarize(rides = n()) %>% arrange(desc(rides)) %>% ungroup() %>% top_n(10, wt = rides)
+
+kable(routes[, c("start.station.name", "end.station.name", "rides")])
+```
+
+#### Most used Citi Bike stations
+```{r map1}
+starts <- bike %>% group_by(start.station.name) %>% 
+  summarize(N = n()) %>% arrange(desc(N))
+starts <- starts %>% 
+  transmute(ride.status = 
+              str_extract(colnames(starts[1]), "^[[:alpha:]]+\\b"), 
+            station.name = start.station.name, N)
+
+ends <- bike %>% group_by(end.station.name) %>% 
+  summarize(N = n()) %>% arrange(desc(N))
+ends <- ends %>% 
+  transmute(ride.status = 
+              str_extract(colnames(ends[1]), "^[[:alpha:]]+\\b"), 
+            station.name = end.station.name, N)
+
+pop_stations <- bind_rows(starts, ends)
+pop_stations$ride.status <- factor(pop_stations$ride.status, levels=c("start", "end"))
+pop_stations <- pop_stations %>% 
+  spread(ride.status, N) %>% 
+  mutate(total = start + end) %>% 
+  top_n(20, wt = total)
+
+pop_stations <- left_join(pop_stations, 
+                          bike[, c("start.station.name", "start.station.id",
+                                   "start.station.latitude", "start.station.longitude")], 
+                          by = c("station.name" = "start.station.name")) %>% 
+  distinct()
+
+pop_stations <- pop_stations %>% 
+  rename(station.id = start.station.id, 
+         latitude = start.station.latitude, 
+         longitude = start.station.longitude)
+
+nyc1 <- leaflet() %>% setView(lng = -73.995, lat = 40.73, zoom = 12) %>%  
+  addTiles() %>%
+  addCircles(lng = pop_stations$longitude, lat = pop_stations$latitude, 
+             radius = pop_stations$total / 50,
+             color = "red", 
+             popup = paste(sep = "<br/>", pop_stations$station.name,
+                           paste("Citibike Station ID:",
+                                 pop_stations$station.id))) 
+
+nyc1
+```
+
+#### Most popular Citi Bike routes
+```{r map2}
+nyc2 <- leaflet() %>% setView(lng = -73.975, lat = 40.740, zoom = 12) %>% 
+  addTiles() %>% 
+  addMarkers(lng = routes$start.station.longitude, 
+             lat = routes$start.station.latitude,
+             popup = paste(sep = "<br/>", routes$start.station.name,
+                           paste("Citibike Station ID:",
+                                 routes$start.station.id)))  %>% 
+  addMarkers(lng = routes$end.station.longitude, 
+             lat = routes$end.station.latitude,
+             popup = paste(sep = "<br/>", routes$end.station.name,
+                           paste("Citibike Station ID:",
+                                 routes$end.station.id)))
+
+# add lines between citibike start and end stations, replace "red" below with 
+# palette()[(i %% length(palette())) + 1] to get different colored routes
+# modify palette as needed: e.g. palette("default"), palette(c("red", "blue", "gray"))
+
+for (i in 1:nrow(routes)) {
+  nyc2 <- nyc2 %>% 
+    addPolylines(lng = unlist(routes[i, c(3, 7)]), 
+                 lat = unlist(routes[i, c(4, 8)]), 
+                 opacity = 0.6, color = "red") 
+}
+nyc2
+```
+
+### Data sources:
+
+* [USDA Food Composition Databases](https://ndb.nal.usda.gov/ndb/search/list)
+
+* [CMS National Health Expenditure Accounts (NHEA) Historical Data](https://www.cms.gov/Research-Statistics-Data-and-Systems/Statistics-Trends-and-Reports/NationalHealthExpendData/Downloads/NHE2014.zip)
+
+* [Consumer Price Index for All Urban Consumers (CPI-U), Series ID: CUUR0000AA0 ](http://data.bls.gov/cgi-bin/surveymost?bls)
+
+* [June 2016 NYC Citi Bike Trip Data](https://s3.amazonaws.com/tripdata/201606-citibike-tripdata.zip)
+
+### Helpful R resources:
+
+[http://stackoverflow.com/questions/17499013/how-do-i-make-a-list-of-data-frames](http://stackoverflow.com/questions/17499013/how-do-i-make-a-list-of-data-frames)
+
+[http://stackoverflow.com/questions/12344982/r-lapply-statement-with-index](http://stackoverflow.com/questions/12344982/r-lapply-statement-with-index)
