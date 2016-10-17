@@ -1,7 +1,7 @@
 ---
 title: "Data 607 Project 2"
 author: "Judd Anderman"
-date: "October 9, 2016"
+date: "October 16, 2016"
 output: 
   html_document:
     toc: true
@@ -11,13 +11,16 @@ output:
 
 Project 2 called on students to select three of our classmates' selected untidy datasets and proposed analyses, create CSV files containing all of the information included in each dataset, read the CSV files into R, use __tidyr__ and __dplyr__ as needed to tidy and transform the data, and carry out the proposed analyses.  
 
-The three untidy datasets that I chose to work with were already available online in CSV format, but in one case, the data for each of the observations of interest were downloaded in five separate CSV files and ultimately combined.
+The three untidy datasets that I chose to work with were already available online in CSV format, but in one case, the data for each of the observations of interest were downloaded in five separate CSV files, which were renamed for ease of use and ultimately combined.  
+
+NOTE: Several of the required CSV files are downloaded to the current working directory in the execution of this project's R code, including the relatively large 271.8 MB CSV file of Citi Bike trip data.
 
 #### Load required packages
 ```{r setup, warning = FALSE, message = FALSE}
-# Change working directory as needed
-setwd("~/DATA 607 Data Acquisition and Management/Project2") 
+# Change working directory as needed, CSV files are downloaded to current working directory
+setwd("~/Project2")
 
+library(RCurl)
 library(dplyr)
 library(tidyr)
 library(stringr)
@@ -28,10 +31,16 @@ library(knitr)
 ```
 
 ### Animal and Plant Milk Nutritional Content
-Aaron Grzasko's Nutitritional Content of Milk proposal required the selection of five different types of milk, consolidating their nutritional information, and analyzing that data across type (here almond, goat, human, rice, and whole).  The data were sourced from the [USDA Food Composition Databases](https://ndb.nal.usda.gov/ndb/search/list).
+Aaron Grzasko's Nutitritional Content of Milk proposal required selecting five different types of milk, consolidating their nutritional information, and analyzing that data across type (here almond, goat, human, rice, and whole).  The data were sourced from the [USDA Food Composition Databases](https://ndb.nal.usda.gov/ndb/search/list).  The Stack Overflow questions and answers referenced below were very helpful guides for reading in the individual CSV files into a single list of data frames which could be manipulated and tidied collectively, and for showing a method of indexing the list elements so that a column consisting of the relevant milk type (based on the list element name) could be added to each data frame.
 
 #### Import CSV data
 ```{r read-in-milk}
+download.file("https://raw.githubusercontent.com/juddanderman/Project2/master/milk_almond.csv", "milk_almond.csv", method = "curl")
+download.file("https://raw.githubusercontent.com/juddanderman/Project2/master/milk_goat.csv", "milk_goat.csv", method = "curl")
+download.file("https://raw.githubusercontent.com/juddanderman/Project2/master/milk_human.csv", "milk_human.csv", method = "curl")
+download.file("https://raw.githubusercontent.com/juddanderman/Project2/master/milk_rice.csv", "milk_rice.csv", method = "curl")
+download.file("https://raw.githubusercontent.com/juddanderman/Project2/master/milk_whole.csv", "milk_whole.csv", method = "curl")
+
 milk_files <- list.files(pattern = "^milk.+\\.csv$")
 
 milk <- lapply(milk_files, 
@@ -42,6 +51,8 @@ names(milk) <- str_replace_all(milk_files, "(milk_)|(\\.csv)", "")
 ```
 
 #### Clean and tidy data frame elements of `milk` list
+Before reducing the data for each milk type to 3 columns representing the nutrient names, units of measure, and values per 100 g - an attribute common to all the selected milk types and the basis for the subsequent analysis - I extracted the cup sizes in grams for each type so that calories per cup could be easily calculated.  
+
 ```{r tidy-milk}
 milk <- lapply(milk, function(x) x %>% slice(5:nrow(x)))
 
@@ -57,7 +68,6 @@ cups <- data.frame(c("almond", "goat", "human", "rice", "whole"),
          stringsAsFactors =  FALSE)
 colnames(cups) <- c("type", "cup.size")
            
-
 milk <- lapply(milk, function(x) x %>% select(num_range("V", 1:3)))
 
 new_colnames <- paste(milk[[1]][1, ])
@@ -114,7 +124,9 @@ I provided a link to [US National Health Expenditure Accounts (NHEA) historical 
 
 #### Import CSV data
 ```{r read-in-rx}
-spend <- read.csv("NHE2014.csv", header = FALSE, stringsAsFactors = FALSE)
+NHE.URL <- getURL("https://raw.githubusercontent.com/juddanderman/Project2/master/NHE2014.csv")
+
+spend <- read.csv(text = NHE.URL, header = FALSE, stringsAsFactors = FALSE)
 spend[1:5, 1:5]
 
 colnames(spend)[2:ncol(spend)] <- spend[2, 2:ncol(spend)]
@@ -132,6 +144,8 @@ title <- spend[1, 1]
 ```
 
 #### Clean up and melt data, join `rx` and `pop` data frames
+I cleaned up and trimmed the strings representing payer names or funding sources, but first looked at the unaltered `rx$payer` vector as the levels of indentation revealed at a glance which elements of the vector represented umbrella categories of payer types.
+
 ```{r melt-rx}
 #rx$payer
 rx$payer <- str_replace(rx$payer, "\\s\\(.+\\)", "")
@@ -175,7 +189,9 @@ ggplot(per_cap, aes(x = year, y = per.cap.rx)) +
 In an attempt to adjust for inflation, I sourced annual averages of the [Consumer Price Index for All Urban Consumers (CPI-U)](http://data.bls.gov/cgi-bin/surveymost?bls) from the Bureau of Labor Statistics (I used the data from Series ID: CUUR0000AA0 with 1967 as the base year, and selected for annual averages to be included in the .xlsx download, which was later saved in .csv format) and joined those data to the prescription spending data extracted from the original NHEA table.  Then, using the average CPI-U for 2014 as an index, I standardized prescription drug spending each year from 1960 to 2014 in 2014 dollars. 
 
 ```{r inflation}
-cpi <- read.csv("CPI-U.csv", header = FALSE, stringsAsFactors = FALSE)
+cpi.URL <- getURL("https://raw.githubusercontent.com/juddanderman/Project2/master/CPI-U.csv")
+
+cpi <- read.csv(text = cpi.URL, header = FALSE, stringsAsFactors = FALSE)
 cpi <- cpi %>% slice(10:nrow(cpi))
 colnames(cpi) <- cpi[1, ]
 cpi <- cpi[-1, ]
@@ -206,6 +222,8 @@ ggplot(per_cap, aes(x = year, y = per.cap, color = type)) +
                        labels = c("2014 dollars", "nominal")) +
   theme(legend.position = "bottom")
 ```
+
+The inflation adjusted scatter plot of per capita prescription drug spending over time shows greater variabliity in the rate and direction of change than the unadjusted plot of nominal spending per capita, as we see additional periods of noticeable decline or stabilization.  We do, however, see a fairly consistent strong increase in inflation adjusted per capita spending from 1980 to 2008-2009, at which point we may be witnessing the effects of the of the Great Recession on prescription drug expenditures.
 
 #### Change in distribution of spending across funding sources/payers over time
 ```{r payer-props-3}
@@ -286,6 +304,10 @@ ggplot(props_18, aes(x = year, y = prop)) +
   annotate("text", x = 1990, y = 0.91, label = "Medicaid") 
 ```
 
+The stacked bar and area plots of the proportion of prescription drug expenditures by funding source reveal a consistent decrease in the proportion of out-of-pocket spending and an increase in the proportion of spending by health insurance payers.  When the health insurers are broken down into more specific payer types, we can more easily see the change over time in the share of prescription drug spending by private insurance companies, Medicaid, and Medicare.  Interestingly, we can very clearly see the results of the implementation of Medicare Part D prescription drug benefit program in 2006 in the sharp increase in the proportion of spending by Medicare and decreases in the proportions of the other top payers at that point in time.   
+
+Finally, I plot the inflation adjusted total prescription drug spending over time for the four largest funding sources revealed in the stacked bar and area plots above, i.e. out-of-pocket, private insurance, Medicaid, Medicare.  
+
 ```{r top-4-inflation}
 infl_adj_top_4 <- rx %>% select(year, Out.of.pocket, Private.Health.Insurance, Medicaid, Medicare) %>% inner_join(cpi, by = c("year" = "Year")) %>% mutate_each(funs((.) * (cpi_index/avg.cpi)), -year) %>% select(1:5) %>% gather(payer, infl.adj.spending, 2:5)
 
@@ -295,32 +317,58 @@ ggplot(infl_adj_top_4, aes(x = year, y = infl.adj.spending, color = payer)) +
 ```
 
 ### NYC Citi Bike Data
-Sharon Morris provided a link to [June 2016 NYC Citi Bike Trip Data](https://s3.amazonaws.com/tripdata/201606-citibike-tripdata.zip) and requested an analysis to produce a profile of the typical Citi Bike user.  The dataset required some playing with in order to be read-in in full.
+Sharon Morris provided a link to the [June 2016 NYC Citi Bike Trip Data](https://s3.amazonaws.com/tripdata/201606-citibike-tripdata.zip) and requested an analysis to produce a profile of the typical Citi Bike user.
 
 #### Import CSV data
 ```{r read-in-citibike}
+download.file("https://s3.amazonaws.com/tripdata/201606-citibike-tripdata.zip", "201606-citibike-tripdata.zip", method = "curl")
+
+unzip("201606-citibike-tripdata.zip")
+
 bike <- read.csv("201606-citibike-tripdata.csv", header = TRUE, stringsAsFactors = FALSE)
 
 head(bike)
-
-colnames(bike) <- str_replace_all(colnames(bike), "X\\.|\\.$", "")
-colnames(bike)
 ```
 
 #### Citi Bike user profiles
-```{r user-profile}
-gender_codes <- data.frame(key = c("unknown", "male", "female"), val = 0:2)
-gender_name <- function(x)  gender_codes$key[gender_codes$val == x]
-
+```{r use-time}
 mdy_hms(bike$stoptime[1]) - mdy_hms(bike$starttime[1])
 bike$tripduration[1]/60
 
-day_of_wk <- bike %>% 
-  group_by(weekday = 
-             wday(mdy_hms(bike$starttime), label = TRUE, abbr = FALSE)) %>%
-  summarize(num_rides = n()) %>% arrange(weekday)  
+day_times <- bike %>% select(starttime) %>% 
+  mutate(weekday =  wday(mdy_hms(starttime), label = TRUE, abbr = FALSE),
+         time_of_day = hour(mdy_hms(bike$starttime)))
+
+day_of_wk <- day_times %>% group_by(weekday) %>% 
+  summarize(num_rides = n())
+
+day_of_wk <- day_of_wk %>% 
+  mutate(prop_rides = round(num_rides/sum(day_of_wk$num_rides), digits = 2)) %>%
+  arrange(weekday)  
 
 kable(day_of_wk)
+
+start_day_times <- day_times %>% 
+  mutate(day_type = ifelse (weekday %in% c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday"), "weekday", "weekend")) %>% 
+  group_by(day_type, time_of_day) %>% summarize(num_rides = n()) %>% 
+   mutate(prop_rides = round(num_rides/sum(day_of_wk$num_rides), digits = 2)) %>%
+  arrange(day_type, time_of_day) %>%
+  top_n(5, wt = num_rides)
+
+kable(start_day_times)
+
+commute_rides <- start_day_times %>% filter(day_type == "weekday") %>% summarize(prop_rides = sum(prop_rides))
+```
+
+From the tables above, we can see that the majority of Citi bike rides in June 2016 occured during the work week, and since `r 100 * commute_rides$prop_rides`% of all rides began on weekdays between 8 and 10 am or 5 and 8 pm, it appears that the largest share of Citi Bike rides are for commuting to and from work. 
+
+```{r find-profiles}
+gender_codes <- data.frame(key = c("unknown", "male", "female"), val = 0:2)
+gender_name <- function(x)  gender_codes$key[gender_codes$val == x]
+
+# Check customers for birth year and known gender data
+nrow(bike %>% filter(usertype == "Customer" & !is.na(birth.year)))
+nrow(bike %>% filter(usertype == "Customer" & gender != 0))
 
 avg_age <- round(mean(year(Sys.time()) - bike$birth.year, na.rm = TRUE), digits = 1)
 avg_trip_minutes <- round(mean(bike$tripduration)/60, digits = 2)
@@ -330,8 +378,6 @@ typ_gender <- bike %>% group_by(gender) %>%
 
 names(typ_gender) <- "typ_gender"
 
-kable(data.frame(typ_gender, avg_age, avg_trip_minutes))
-
 typical_rider <- bike %>% group_by(usertype, gender) %>%
   summarize(N = n(), 
             age = mean(year(Sys.time()) - birth.year, na.rm = TRUE),
@@ -340,11 +386,18 @@ typical_rider <- bike %>% group_by(usertype, gender) %>%
 typical_rider <- typical_rider %>% 
   mutate(gender = gender_name(gender), age = round(age, digits = 1), 
          duration_minutes = round(duration_minutes, digits = 2))
+```
+
+The first table below shows the most common gender and average age of Citi Bike subscribers - since we do not have gender or birth year data for the non-subscribing customers - and the average trip length in minutes for all rides.  The second table breaks down the average trip duration in minutes across rider types (i.e. subscribers and customers) and genders.
+
+```{r user-profiles}
+kable(data.frame(typ_gender, avg_age, avg_trip_minutes))
 
 kable(typical_rider)
+```
 
-nrow(bike %>% filter(usertype == "Customer" & !is.na(birth.year)))
-
+```{r route-check, eval = FALSE, echo = FALSE}
+# Examination of most used bikes, start and end stations, and routes
 bike %>% group_by(bikeid) %>% summarize(N = n()) %>% 
   top_n(10) %>% arrange(desc(N))
 
@@ -368,17 +421,11 @@ bike %>% group_by(usertype, end.station.name) %>%
 bike %>% group_by(usertype, start.station.name, end.station.name) %>% 
   summarize(N = n()) %>% arrange(desc(N)) %>% ungroup() %>% 
   top_n(10, wt = N)
-
-routes <- bike %>% group_by(start.station.id, start.station.name, 
-                            start.station.longitude, start.station.latitude, 
-                            end.station.id, end.station.name, 
-                            end.station.longitude, end.station.latitude) %>% 
-  summarize(rides = n()) %>% arrange(desc(rides)) %>% ungroup() %>% top_n(10, wt = rides)
-
-kable(routes[, c("start.station.name", "end.station.name", "rides")])
 ```
 
 #### Most used Citi Bike stations
+Here we examine the most used Citi Bike stations  in terms of total tranfers (i.e. ride starts and ends) and then map those stations using the __leaflet__ package.
+
 ```{r map1}
 starts <- bike %>% group_by(start.station.name) %>% 
   summarize(N = n()) %>% arrange(desc(N))
@@ -412,6 +459,8 @@ pop_stations <- pop_stations %>%
          latitude = start.station.latitude, 
          longitude = start.station.longitude)
 
+kable(pop_stations %>% select(station.name, total))
+
 nyc1 <- leaflet() %>% setView(lng = -73.995, lat = 40.73, zoom = 12) %>%  
   addTiles() %>%
   addCircles(lng = pop_stations$longitude, lat = pop_stations$latitude, 
@@ -425,7 +474,17 @@ nyc1
 ```
 
 #### Most popular Citi Bike routes
+Finally, I found the most popular Citi Bike routes in June 2016 and roughly mapped those routes as lines between the relevant start and end stations.  Interestingly, several of the most common routes had the same start and end station.
+
 ```{r map2}
+routes <- bike %>% group_by(start.station.id, start.station.name, 
+                            start.station.longitude, start.station.latitude, 
+                            end.station.id, end.station.name, 
+                            end.station.longitude, end.station.latitude) %>% 
+  summarize(rides = n()) %>% arrange(desc(rides)) %>% ungroup() %>% top_n(10, wt = rides)
+
+kable(routes[, c("start.station.name", "end.station.name", "rides")])
+
 nyc2 <- leaflet() %>% setView(lng = -73.975, lat = 40.740, zoom = 12) %>% 
   addTiles() %>% 
   addMarkers(lng = routes$start.station.longitude, 
